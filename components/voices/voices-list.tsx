@@ -23,7 +23,7 @@ function VoiceCard({
   onSetDefault: (id: number) => Promise<void>;
   isSettingDefault: boolean;
   currentlyPlayingId: number | null;
-  onPlayPreview: (id: number) => void;
+  onPlayPreview: (voice: Voice) => void;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const isPlaying = currentlyPlayingId === voice.id;
@@ -56,7 +56,7 @@ function VoiceCard({
           <Volume2 className="h-6 w-6" />
         </div>
         <button
-          onClick={() => onPlayPreview(voice.id)}
+          onClick={() => onPlayPreview(voice)}
           className={`rounded-full p-3 transition-colors border-2 ${
             isPlaying
               ? 'bg-primary text-primary-foreground border-primary'
@@ -111,6 +111,7 @@ export function VoicesList() {
   const [currentlyPlayingId, setCurrentlyPlayingId] = useState<number | null>(null);
   const [isLoadingAudio, setIsLoadingAudio] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCacheRef = useRef<Map<string, string>>(new Map());
 
   const fetchVoices = async () => {
     try {
@@ -131,13 +132,15 @@ export function VoicesList() {
     fetchVoices();
   }, []);
 
-  // Cleanup audio on unmount
+  // Cleanup audio and cached blob URLs on unmount
   useEffect(() => {
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
       }
+      audioCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+      audioCacheRef.current.clear();
     };
   }, []);
 
@@ -166,9 +169,9 @@ export function VoicesList() {
     }
   };
 
-  const handlePlayPreview = async (id: number) => {
+  const handlePlayPreview = async (voice: Voice) => {
     // If already playing this voice, stop it
-    if (currentlyPlayingId === id) {
+    if (currentlyPlayingId === voice.id) {
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -183,30 +186,33 @@ export function VoicesList() {
       audioRef.current = null;
     }
 
-    setIsLoadingAudio(true);
-    setCurrentlyPlayingId(id);
+    setCurrentlyPlayingId(voice.id);
 
     try {
-      const response = await fetch(`http://localhost:5000/api/voice/${id}/preview`);
-      if (!response.ok) {
-        throw new Error('Failed to load preview');
-      }
+      let url = audioCacheRef.current.get(voice.model);
 
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
+      if (!url) {
+        setIsLoadingAudio(true);
+        const response = await fetch(`http://localhost:8080/preview?model=${encodeURIComponent(voice.model)}`);
+        if (!response.ok) {
+          throw new Error('Failed to load preview');
+        }
+        const blob = await response.blob();
+        url = URL.createObjectURL(blob);
+        audioCacheRef.current.set(voice.model, url);
+        setIsLoadingAudio(false);
+      }
 
       const audio = new Audio(url);
       audioRef.current = audio;
 
       audio.onended = () => {
         setCurrentlyPlayingId(null);
-        URL.revokeObjectURL(url);
         audioRef.current = null;
       };
 
       audio.onerror = () => {
         setCurrentlyPlayingId(null);
-        URL.revokeObjectURL(url);
         audioRef.current = null;
         console.error('Error playing audio');
       };
@@ -215,7 +221,6 @@ export function VoicesList() {
     } catch (err) {
       console.error('Error playing preview:', err);
       setCurrentlyPlayingId(null);
-    } finally {
       setIsLoadingAudio(false);
     }
   };
